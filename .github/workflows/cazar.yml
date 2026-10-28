@@ -2,9 +2,8 @@ name: Cazar Servidor Oracle (4 OCPU / 24 GB)
 
 on:
   schedule:
-    # Se ejecuta automáticamente cada 30 minutos
     - cron: '*/30 * * * *'
-  workflow_dispatch: # Permite lanzarlo manualmente cuando quieras
+  workflow_dispatch:
 
 jobs:
   intentar_creacion:
@@ -15,9 +14,11 @@ jobs:
           pipx install oci-cli
 
       - name: Configurar credenciales OCI
+        env:
+          KEY_DATA: ${{ secrets.OCI_KEY_FILE }}
         run: |
           mkdir -p ~/.oci
-          echo "${{ secrets.OCI_KEY_FILE }}" > ~/.oci/oci_api_key.pem
+          echo "$KEY_DATA" > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
 
           cat << EOF > ~/.oci/config
@@ -29,37 +30,45 @@ jobs:
           region=${{ secrets.OCI_REGION }}
           EOF
 
-      - name: Reintentos continuos de captura
+      - name: Verificar autenticación con Oracle
+        run: |
+          echo "Comprobando conexión y llaves..."
+          oci os ns get
+
+      - name: Reintentos de captura
         run: |
           STACK_ID="${{ secrets.OCI_STACK_ID }}"
-          echo "Iniciando peticiones para capturar 4 OCPUs y 24 GB..."
+          echo "Iniciando peticiones sobre el Stack: $STACK_ID"
 
-          # Intenta de forma continua durante 25 minutos por cada corrida
           TIEMPO_LIMITE=$((SECONDS + 1500))
 
           while [ $SECONDS -lt $TIEMPO_LIMITE ]; do
             HORA=$(date '+%H:%M:%S')
-            JOB_ID=$(oci resource-manager job create-apply-job \
+            
+            # Lanzamos el job capturando la respuesta real
+            RESPUESTA=$(oci resource-manager job create-apply-job \
               --stack-id "$STACK_ID" \
-              --execution-plan-strategy AUTO_APPROVED \
-              --query "data.id" \
-              --raw-output 2>/dev/null || true)
+              --execution-plan-strategy AUTO_APPROVED 2>&1 || true)
+            
+            JOB_ID=$(echo "$RESPUESTA" | jq -r '.data.id // empty' 2>/dev/null || true)
 
-            if [ -n "$JOB_ID" ] && [ "$JOB_ID" != "None" ]; then
-              echo "[$HORA] Job en cola ($JOB_ID). Esperando validación física..."
+            if [ -n "$JOB_ID" ]; then
+              echo "[$HORA] Job enviado con éxito: $JOB_ID. Verificando disponibilidad física..."
               sleep 35
               ESTADO=$(oci resource-manager job get --job-id "$JOB_ID" --query "data.\"lifecycle-state\"" --raw-output 2>/dev/null || true)
 
               if [ "$ESTADO" = "SUCCEEDED" ]; then
                 echo "=========================================================="
-                echo "[$HORA] ¡ÉXITO TOTAL! Servidor 4 OCPU / 24 GB aprovisionado."
+                echo "[$HORA] ¡ÉXITO TOTAL! Servidor 4 OCPU / 24 GB creado."
                 echo "=========================================================="
                 exit 0
               else
-                echo "[$HORA] Rack saturado. Reintentando en 20s..."
+                echo "[$HORA] Capacidad llena. Reintentando en 25 segundos..."
               fi
             else
-              echo "[$HORA] Petición no recibida. Reintentando en 20s..."
+              echo "[$HORA] Detalle de respuesta de Oracle:"
+              echo "$RESPUESTA"
+              echo "Reintentando en 30 segundos..."
             fi
-            sleep 20
+            sleep 25
           done
