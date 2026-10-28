@@ -1,0 +1,65 @@
+name: Cazar Servidor Oracle (4 OCPU / 24 GB)
+
+on:
+  schedule:
+    # Se ejecuta automáticamente cada 30 minutos
+    - cron: '*/30 * * * *'
+  workflow_dispatch: # Permite lanzarlo manualmente cuando quieras
+
+jobs:
+  intentar_creacion:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalar OCI CLI
+        run: |
+          pipx install oci-cli
+
+      - name: Configurar credenciales OCI
+        run: |
+          mkdir -p ~/.oci
+          echo "${{ secrets.OCI_KEY_FILE }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+
+          cat << EOF > ~/.oci/config
+          [DEFAULT]
+          user=${{ secrets.OCI_USER_OCID }}
+          fingerprint=${{ secrets.OCI_FINGERPRINT }}
+          key_file=/home/runner/.oci/oci_api_key.pem
+          tenancy=${{ secrets.OCI_TENANCY_OCID }}
+          region=${{ secrets.OCI_REGION }}
+          EOF
+
+      - name: Reintentos continuos de captura
+        run: |
+          STACK_ID="${{ secrets.OCI_STACK_ID }}"
+          echo "Iniciando peticiones para capturar 4 OCPUs y 24 GB..."
+
+          # Intenta de forma continua durante 25 minutos por cada corrida
+          TIEMPO_LIMITE=$((SECONDS + 1500))
+
+          while [ $SECONDS -lt $TIEMPO_LIMITE ]; do
+            HORA=$(date '+%H:%M:%S')
+            JOB_ID=$(oci resource-manager job create-apply-job \
+              --stack-id "$STACK_ID" \
+              --execution-plan-strategy AUTO_APPROVED \
+              --query "data.id" \
+              --raw-output 2>/dev/null || true)
+
+            if [ -n "$JOB_ID" ] && [ "$JOB_ID" != "None" ]; then
+              echo "[$HORA] Job en cola ($JOB_ID). Esperando validación física..."
+              sleep 35
+              ESTADO=$(oci resource-manager job get --job-id "$JOB_ID" --query "data.\"lifecycle-state\"" --raw-output 2>/dev/null || true)
+
+              if [ "$ESTADO" = "SUCCEEDED" ]; then
+                echo "=========================================================="
+                echo "[$HORA] ¡ÉXITO TOTAL! Servidor 4 OCPU / 24 GB aprovisionado."
+                echo "=========================================================="
+                exit 0
+              else
+                echo "[$HORA] Rack saturado. Reintentando en 20s..."
+              fi
+            else
+              echo "[$HORA] Petición no recibida. Reintentando en 20s..."
+            fi
+            sleep 20
+          done
