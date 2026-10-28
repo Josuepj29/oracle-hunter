@@ -1,14 +1,20 @@
-name: Cazar Servidor Oracle (4 OCPU / 24 GB)
+name: Hackear Servidor Oracle (4 OCPU / 24 GB)
 
 on:
   schedule:
-    # Se ejecuta de forma programada cada 30 minutos
-    - cron: '*/30 * * * *'
-  workflow_dispatch:
+    # Intenta arrancar un nuevo ciclo cada 4 o 5 horas
+    - cron: '0 */4 * * *'
+  workflow_dispatch: # Permite lanzarlo manualmente cuando quieras
+
+# Evita que se solapen dos ejecuciones a la vez
+concurrency:
+  group: oracle-hunter
+  cancel-in-progress: false
 
 jobs:
   intentar_creacion:
     runs-on: ubuntu-latest
+    timeout-minutes: 330 # Límite de seguridad de 5.5 horas
     steps:
       - name: Instalar OCI CLI
         run: |
@@ -36,17 +42,17 @@ jobs:
         run: |
           oci os ns get
 
-      - name: Reintentos de captura
+      - name: Reintentos continuos (5 Horas)
         run: |
           STACK_ID="${{ secrets.OCI_STACK_ID }}"
           echo "Iniciando peticiones sobre el Stack: $STACK_ID"
 
-          TIEMPO_LIMITE=$((SECONDS + 1500))
+          # 18,000 segundos = 5 horas seguidas de intentos
+          TIEMPO_LIMITE=$((SECONDS + 18000))
 
           while [ $SECONDS -lt $TIEMPO_LIMITE ]; do
             HORA=$(date '+%H:%M:%S')
 
-            # Enviar solicitud capturando la respuesta
             RESPUESTA=$(oci resource-manager job create-apply-job \
               --stack-id "$STACK_ID" \
               --execution-plan-strategy AUTO_APPROVED 2>&1 || true)
@@ -54,17 +60,17 @@ jobs:
             JOB_ID=$(echo "$RESPUESTA" | jq -r '.data.id // empty' 2>/dev/null || true)
 
             if [ -n "$JOB_ID" ]; then
-              echo "[$HORA] Job en proceso ($JOB_ID). Evaluando capacidad física en São Paulo..."
+              echo "[$HORA] Job en proceso ($JOB_ID). Evaluando capacidad física..."
               sleep 40
               ESTADO=$(oci resource-manager job get --job-id "$JOB_ID" --query "data.\"lifecycle-state\"" --raw-output 2>/dev/null || true)
 
               if [ "$ESTADO" = "SUCCEEDED" ]; then
                 echo "=========================================================="
-                echo "[$HORA] ¡ÉXITO! Instancia 4 OCPU / 24 GB aprovisionada."
+                echo "[$HORA] ¡ÉXITO TOTAL! Instancia 4 OCPU / 24 GB aprovisionada."
                 echo "=========================================================="
                 exit 0
               else
-                echo "[$HORA] Capacidad aún agotada. Esperando 60 segundos para el próximo intento..."
+                echo "[$HORA] Capacidad aún agotada. Esperando 60 segundos..."
                 sleep 60
               fi
             elif echo "$RESPUESTA" | grep -q "TooManyRequests"; then
