@@ -2,6 +2,7 @@ name: Cazar Servidor Oracle (4 OCPU / 24 GB)
 
 on:
   schedule:
+    # Se ejecuta de forma programada cada 30 minutos
     - cron: '*/30 * * * *'
   workflow_dispatch:
 
@@ -29,10 +30,10 @@ jobs:
           tenancy=${{ secrets.OCI_TENANCY_OCID }}
           region=${{ secrets.OCI_REGION }}
           EOF
+          chmod 600 ~/.oci/config
 
       - name: Verificar autenticación con Oracle
         run: |
-          echo "Comprobando conexión y llaves..."
           oci os ns get
 
       - name: Reintentos de captura
@@ -44,31 +45,35 @@ jobs:
 
           while [ $SECONDS -lt $TIEMPO_LIMITE ]; do
             HORA=$(date '+%H:%M:%S')
-            
-            # Lanzamos el job capturando la respuesta real
+
+            # Enviar solicitud capturando la respuesta
             RESPUESTA=$(oci resource-manager job create-apply-job \
               --stack-id "$STACK_ID" \
               --execution-plan-strategy AUTO_APPROVED 2>&1 || true)
-            
+
             JOB_ID=$(echo "$RESPUESTA" | jq -r '.data.id // empty' 2>/dev/null || true)
 
             if [ -n "$JOB_ID" ]; then
-              echo "[$HORA] Job enviado con éxito: $JOB_ID. Verificando disponibilidad física..."
-              sleep 35
+              echo "[$HORA] Job en proceso ($JOB_ID). Evaluando capacidad física en São Paulo..."
+              sleep 40
               ESTADO=$(oci resource-manager job get --job-id "$JOB_ID" --query "data.\"lifecycle-state\"" --raw-output 2>/dev/null || true)
 
               if [ "$ESTADO" = "SUCCEEDED" ]; then
                 echo "=========================================================="
-                echo "[$HORA] ¡ÉXITO TOTAL! Servidor 4 OCPU / 24 GB creado."
+                echo "[$HORA] ¡ÉXITO! Instancia 4 OCPU / 24 GB aprovisionada."
                 echo "=========================================================="
                 exit 0
               else
-                echo "[$HORA] Capacidad llena. Reintentando en 25 segundos..."
+                echo "[$HORA] Capacidad aún agotada. Esperando 60 segundos para el próximo intento..."
+                sleep 60
               fi
+            elif echo "$RESPUESTA" | grep -q "TooManyRequests"; then
+              echo "[$HORA] Rate limit temporal alcanzado (429). Enfriando API durante 90 segundos..."
+              sleep 90
             else
-              echo "[$HORA] Detalle de respuesta de Oracle:"
+              echo "[$HORA] Respuesta de Oracle:"
               echo "$RESPUESTA"
-              echo "Reintentando en 30 segundos..."
+              echo "Reintentando en 60 segundos..."
+              sleep 60
             fi
-            sleep 25
           done
